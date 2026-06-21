@@ -1,4 +1,5 @@
 import io
+import time
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -7,6 +8,7 @@ import plotly.graph_objects as go
 from src.dom_parser import parse_html_dom
 from src.nlp_engine import parse_user_story
 from src.testcase_generator import generate_test_cases
+from src.testcase_executor import fetch_html_from_url, execute_test_cases
 from src.exporter import export_to_csv, export_to_json, export_to_excel_writer
 from data.sample_data import SAMPLES
 
@@ -134,6 +136,22 @@ st.markdown("""
         border-left: 4px solid #6366f1;
         padding-left: 0.75rem;
     }
+    
+    /* Simulated Terminal */
+    .terminal-window {
+        background-color: #090a0f;
+        color: #00ff66;
+        font-family: 'JetBrains Mono', monospace;
+        padding: 1.5rem;
+        border-radius: 12px;
+        border: 1px solid #1e293b;
+        height: 350px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        font-size: 0.85rem;
+        line-height: 1.4;
+        box-shadow: inset 0 2px 10px rgba(0,0,0,0.8);
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -141,7 +159,7 @@ st.markdown("""
 st.markdown("""
 <div class="app-header">
     <h1 class="app-title">🤖 AI-Driven Test Case Generator</h1>
-    <div class="app-subtitle">Automatically analyze web forms & user stories to build comprehensive test suites</div>
+    <div class="app-subtitle">Automatically analyze web forms & user stories to build and execute test suites</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -158,7 +176,7 @@ st.sidebar.markdown("""
 # Navigation Selector
 app_tab = st.sidebar.radio(
     "Navigate System",
-    ["🚀 Test Case Generator", "📊 Analytics & Coverage", "📚 Documentation & Info"],
+    ["🚀 Test Case Generator", "🏃 Live Test Runner", "📊 Analytics & Coverage", "📚 Documentation & Info"],
     index=0
 )
 
@@ -166,7 +184,7 @@ st.sidebar.markdown("<br><hr style='border-color: rgba(255,255,255,0.1)'/><h4 st
 include_neg = st.sidebar.checkbox("Include Negative Scenarios", value=True, help="Generates security, error, validation, and script injection checks.")
 include_bound = st.sidebar.checkbox("Include Boundary Analysis", value=True, help="Generates length constraints, numeric limit checks, and bounds validations.")
 
-# Maintain session state for test cases
+# Maintain session state for test cases and runs
 if 'generated_suite' not in st.session_state:
     st.session_state.generated_suite = []
 if 'dom_elements' not in st.session_state:
@@ -177,11 +195,36 @@ if 'active_story' not in st.session_state:
     st.session_state.active_story = ""
 if 'active_html' not in st.session_state:
     st.session_state.active_html = ""
+if 'target_url' not in st.session_state:
+    st.session_state.target_url = "https://example.com"
+if 'last_execution_results' not in st.session_state:
+    st.session_state.last_execution_results = []
 
 # ----------------- TAB 1: GENERATOR -----------------
 if app_tab == "🚀 Test Case Generator":
     
     st.markdown("<div class='section-header'>🔬 Input Analyzer Engine</div>", unsafe_allow_html=True)
+    
+    # URL Fetcher section
+    col_url, col_fetch_btn = st.columns([4, 1])
+    with col_url:
+        input_url = st.text_input("🌐 Fetch HTML DOM from active URL", value=st.session_state.target_url, placeholder="https://example.com")
+        st.session_state.target_url = input_url
+    with col_fetch_btn:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        fetch_btn = st.button("🌐 Fetch & Parse URL", use_container_width=True)
+        
+    if fetch_btn:
+        if not input_url.strip():
+            st.error("Please enter a valid URL.")
+        else:
+            with st.spinner("Downloading page and parsing DOM structure..."):
+                try:
+                    fetched_html = fetch_html_from_url(input_url)
+                    st.session_state.active_html = fetched_html
+                    st.success("Successfully fetched HTML from target URL!")
+                except Exception as e:
+                    st.error(str(e))
     
     # Selection of samples
     sample_key = st.selectbox(
@@ -344,7 +387,138 @@ if app_tab == "🚀 Test Case Generator":
         else:
             st.info("No test cases match the active filter configurations.")
 
-# ----------------- TAB 2: ANALYTICS -----------------
+# ----------------- TAB 2: LIVE TEST RUNNER -----------------
+elif app_tab == "🏃 Live Test Runner":
+    st.markdown("<div class='section-header'>🏃 Live HTTP Automated Test Runner</div>", unsafe_allow_html=True)
+    
+    if not st.session_state.generated_suite:
+        st.info("Please generate test cases in the first tab before running the executor.")
+    else:
+        st.markdown("""
+        Configure the execution parameters below. The test runner will send real HTTP validation payloads 
+        to the target URL, inspect response headers, and display live execution reports.
+        """)
+        
+        col_r1, col_r2 = st.columns([3, 1])
+        with col_r1:
+            exec_url = st.text_input("🔗 Target URL for Execution", value=st.session_state.target_url)
+            st.session_state.target_url = exec_url
+        with col_r2:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            force_sim = st.checkbox("Force Simulation Run", value=False, help="Forces simulated run with step logs even if the site is online.")
+            
+        col_act, _ = st.columns([1, 3])
+        with col_act:
+            run_btn = st.button("🚀 Execute Automated Test Suite", use_container_width=True)
+            
+        if run_btn:
+            # Set up structures for live display
+            st.markdown("#### Terminal Console Output")
+            terminal_placeholder = st.empty()
+            progress_bar = st.progress(0.0)
+            
+            terminal_logs = ""
+            run_results = []
+            
+            total_tests = len(st.session_state.generated_suite)
+            
+            # Start generator iterator
+            generator_iterator = execute_test_cases(
+                st.session_state.generated_suite, 
+                exec_url, 
+                force_simulation=force_sim
+            )
+            
+            for idx, result in enumerate(generator_iterator):
+                run_results.append(result)
+                
+                # Append logs to terminal
+                terminal_logs += "\n".join(result['logs']) + "\n\n"
+                terminal_placeholder.markdown(f'<div class="terminal-window">{terminal_logs}</div>', unsafe_allow_html=True)
+                
+                # Update progress
+                progress_bar.progress((idx + 1) / total_tests)
+                
+            st.session_state.last_execution_results = run_results
+            st.toast("🎉 Execution completed successfully!", icon="🏁")
+            
+        # Display Execution Dashboard if results exist
+        if st.session_state.last_execution_results:
+            results = st.session_state.last_execution_results
+            total_executed = len(results)
+            passed_count = sum(1 for r in results if r['status'] == "PASS")
+            failed_count = sum(1 for r in results if r['status'] == "FAIL")
+            avg_latency = int(sum(r['latency'] for r in results) / total_executed) if total_executed > 0 else 0
+            
+            st.markdown("<div class='section-header'>📊 Execution Summary</div>", unsafe_allow_html=True)
+            
+            # Metric cards
+            ec_1, ec_2, ec_3, ec_4 = st.columns(4)
+            with ec_1:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Executed Tests</div>
+                    <div class="metric-value metric-highlight-1">{total_executed}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with ec_2:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Passed Tests</div>
+                    <div class="metric-value metric-highlight-3">{passed_count}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with ec_3:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Failed Tests</div>
+                    <div class="metric-value metric-highlight-2">{failed_count}</div>
+                </div>
+                """, unsafe_allow_html=True)
+            with ec_4:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-title">Avg Latency</div>
+                    <div class="metric-value">{avg_latency} ms</div>
+                </div>
+                """, unsafe_allow_html=True)
+                
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Chart and Table grid
+            r_col1, r_col2 = st.columns([1, 2])
+            
+            with r_col1:
+                # Success Rate Chart
+                fig_success = px.pie(
+                    values=[passed_count, failed_count],
+                    names=['Passed', 'Failed'],
+                    title='Execution Success Rate',
+                    color=['Passed', 'Failed'],
+                    color_discrete_map={'Passed': '#10b981', 'Failed': '#ef4444'},
+                    hole=0.45
+                )
+                fig_success.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    font_color='#f8fafc',
+                    title_font_size=15,
+                    showlegend=True
+                )
+                st.plotly_chart(fig_success, use_container_width=True)
+                
+            with r_col2:
+                # Results Grid Table
+                st.markdown("#### Test Execution Details")
+                df_results = pd.DataFrame(results)
+                # Keep interesting columns
+                df_disp = df_results[['id', 'element', 'type', 'method', 'response_code', 'latency', 'status']]
+                df_disp.columns = [col.replace('_', ' ').title() for col in df_disp.columns]
+                
+                # Apply custom coloring to status in Streamlit
+                st.dataframe(df_disp, use_container_width=True, hide_index=True)
+
+# ----------------- TAB 3: ANALYTICS -----------------
 elif app_tab == "📊 Analytics & Coverage":
     st.markdown("<div class='section-header'>📈 Test Suite Analytics & Coverage Dashboard</div>", unsafe_allow_html=True)
     
@@ -507,7 +681,7 @@ elif app_tab == "📊 Analytics & Coverage":
             cov_df = pd.DataFrame(coverage_data)
             st.dataframe(cov_df, use_container_width=True, hide_index=True)
 
-# ----------------- TAB 3: DOCUMENTATION -----------------
+# ----------------- TAB 4: DOCUMENTATION -----------------
 elif app_tab == "📚 Documentation & Info":
     st.markdown("<div class='section-header'>📖 System Architecture & ML Framework</div>", unsafe_allow_html=True)
     
@@ -523,6 +697,7 @@ elif app_tab == "📚 Documentation & Info":
         D --> E
         E --> F[ML Priority Classifier: Random Forest]
         F --> G[Formatted Output: Excel/CSV/JSON]
+        G --> H[Automated Test Executor: Requests & Simulation]
     ```
     
     #### 1. DOM Parser
@@ -542,6 +717,13 @@ elif app_tab == "📚 Documentation & Info":
     - Generates **Happy-path** verification flows.
     - Applies **Boundary Value Analysis** (BVA) & **Equivalence Partitioning** (EP).
     - Runs a **Random Forest classifier** (Scikit-learn) trained in memory on typical test layouts to assign priority levels (Critical, High, Medium, Low).
+    
+    #### 4. Live Test Executor
+    Runs test cases on active targets:
+    - Resolves action URLs.
+    - Formulates GET/POST validation parameters.
+    - Captures status codes and response times.
+    - Logs detailed terminal sequences during execution.
     """)
     
     st.markdown("### 📊 Performance & Evaluation Benchmarks")
